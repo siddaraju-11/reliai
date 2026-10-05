@@ -340,7 +340,7 @@ const triggerPipelineFromWebhook = async (
         },
       },
       {
-        new: true,
+        returnDocument: "after",
       }
     );
 

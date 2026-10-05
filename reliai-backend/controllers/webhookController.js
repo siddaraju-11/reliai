@@ -1,3 +1,5 @@
+const WebhookDelivery = require("../models/WebhookDelivery");
+
 const {
   GitHubWebhookError,
   verifyGitHubSignature,
@@ -6,32 +8,48 @@ const {
 } = require("../services/githubWebhookService");
 
 // ======================================================
+// HELPERS
+// ======================================================
+
+const normalizeHeader = (value) => {
+  return typeof value === "string"
+    ? value.trim()
+    : "";
+};
+
+const isDuplicateKeyError = (error) => {
+  return Boolean(
+    error &&
+      (
+        error.code === 11000 ||
+        error.code === 11001
+      )
+  );
+};
+
+// ======================================================
 // GITHUB WEBHOOK
 // POST /api/webhook/github
 // ======================================================
 
-exports.handleGitHubWebhook = async (
-  req,
-  res
-) => {
+exports.handleGitHubWebhook = async (req, res) => {
+  let deliveryRecord = null;
+
   try {
-    const signature =
-      req.get(
-        "x-hub-signature-256"
-      );
+    const signature = normalizeHeader(
+      req.get("x-hub-signature-256")
+    );
 
-    const event =
-      req.get(
-        "x-github-event"
-      );
+    const event = normalizeHeader(
+      req.get("x-github-event")
+    );
 
-    const deliveryId =
-      req.get(
-        "x-github-delivery"
-      );
+    const deliveryId = normalizeHeader(
+      req.get("x-github-delivery")
+    );
 
     // ==================================================
-    // VERIFY SIGNATURE BEFORE PARSING/TRUSTING PAYLOAD
+    // VERIFY SIGNATURE FIRST
     // ==================================================
 
     verifyGitHubSignature({
@@ -40,13 +58,33 @@ exports.handleGitHubWebhook = async (
     });
 
     // ==================================================
-    // PARSE VERIFIED BODY
+    // REQUIRE DELIVERY ID
     // ==================================================
 
-    const payload =
-      parseWebhookPayload(
-        req.body
+    if (!deliveryId) {
+      throw new GitHubWebhookError(
+        "GitHub delivery ID is missing.",
+        "MISSING_DELIVERY_ID",
+        400
       );
+    }
+
+    // ==================================================
+    // PARSE VERIFIED PAYLOAD
+    // ==================================================
+
+    const payload = parseWebhookPayload(
+      req.body
+    );
+
+    const repository =
+      payload?.repository?.full_name ||
+      null;
+
+    const ref =
+      typeof payload?.ref === "string"
+        ? payload.ref
+        : null;
 
     console.log("");
     console.log(
@@ -61,7 +99,7 @@ exports.handleGitHubWebhook = async (
 
     console.log(
       "[WEBHOOK] Delivery:",
-      deliveryId || "N/A"
+      deliveryId
     );
 
     console.log(
@@ -71,18 +109,64 @@ exports.handleGitHubWebhook = async (
 
     console.log(
       "[WEBHOOK] Repository:",
-      payload?.repository?.full_name ||
-        "N/A"
+      repository || "N/A"
     );
 
     console.log(
       "[WEBHOOK] Ref:",
-      payload?.ref ||
-        "N/A"
+      ref || "N/A"
     );
 
     // ==================================================
-    // PROCESS EVENT
+    // CLAIM DELIVERY
+    //
+    // The unique MongoDB index makes this atomic.
+    // If two copies arrive simultaneously, only one
+    // insert can succeed.
+    // ==================================================
+
+    try {
+      deliveryRecord =
+        await WebhookDelivery.create({
+          provider: "GITHUB",
+          deliveryId,
+          event: event || null,
+          repository,
+          ref,
+          status: "PROCESSING",
+        });
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+
+      const existing =
+        await WebhookDelivery.findOne({
+          provider: "GITHUB",
+          deliveryId,
+        }).lean();
+
+      console.log(
+        "[WEBHOOK] Duplicate delivery ignored:",
+        deliveryId
+      );
+
+      return res.status(200).json({
+        success: true,
+        accepted: true,
+        duplicate: true,
+        ignored: true,
+        deliveryId,
+        event: event || null,
+        previousStatus:
+          existing?.status || null,
+        message:
+          "GitHub webhook delivery was already received.",
+      });
+    }
+
+    // ==================================================
+    // PROCESS EVENT ONCE
     // ==================================================
 
     const result =
@@ -91,15 +175,29 @@ exports.handleGitHubWebhook = async (
         payload,
       });
 
+    // ==================================================
+    // MARK DELIVERY PROCESSED
+    // ==================================================
+
+    await WebhookDelivery.updateOne(
+      {
+        _id: deliveryRecord._id,
+      },
+      {
+        $set: {
+          status: "PROCESSED",
+          result,
+          error: null,
+          processedAt: new Date(),
+        },
+      }
+    );
+
     return res.status(202).json({
       success: true,
-
-      deliveryId:
-        deliveryId || null,
-
-      event:
-        event || null,
-
+      duplicate: false,
+      deliveryId,
+      event: event || null,
       ...result,
     });
   } catch (error) {
@@ -108,21 +206,45 @@ exports.handleGitHubWebhook = async (
       error
     );
 
+    // ==================================================
+    // MARK CLAIMED DELIVERY FAILED
+    // ==================================================
+
+    if (deliveryRecord?._id) {
+      try {
+        await WebhookDelivery.updateOne(
+          {
+            _id: deliveryRecord._id,
+          },
+          {
+            $set: {
+              status: "FAILED",
+              error:
+                error.message ||
+                "Webhook processing failed.",
+              processedAt: new Date(),
+            },
+          }
+        );
+      } catch (updateError) {
+        console.error(
+          "[WEBHOOK] Failed to update delivery record:",
+          updateError
+        );
+      }
+    }
+
     if (
-      error instanceof
-      GitHubWebhookError
+      error instanceof GitHubWebhookError
     ) {
       return res
         .status(
-          error.statusCode ||
-            400
+          error.statusCode || 400
         )
         .json({
           success: false,
-          message:
-            error.message,
-          code:
-            error.code,
+          message: error.message,
+          code: error.code,
         });
     }
 
