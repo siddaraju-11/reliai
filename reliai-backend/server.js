@@ -20,7 +20,8 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const buildRoutes = require("./routes/buildRoutes");
 const aiRoutes = require("./routes/aiRoutes");
 const githubRoutes = require("./routes/githubRoutes");
-
+const webhookRoutes =
+  require("./routes/webhookRoutes");
 // ======================================================
 // Services
 // ======================================================
@@ -95,7 +96,27 @@ app.use(
     credentials: true,
   })
 );
+// ======================================================
+// GitHub Webhook
+//
+// IMPORTANT:
+// Must be mounted BEFORE express.json().
+//
+// GitHub HMAC verification requires the exact raw bytes
+// received from GitHub.
+// ======================================================
 
+app.use(
+  "/api/webhook",
+  express.raw({
+    type: "application/json",
+    limit: "2mb",
+  }),
+  webhookRoutes
+);
+// ======================================================
+// Normal JSON requests
+// ======================================================
 app.use(
   express.json({
     limit: "10mb",

@@ -1,5 +1,5 @@
 const fs = require("fs");
-
+const path = require("path");
 const Pipeline = require("../models/Pipeline");
 const Build = require("../models/Build");
 const Notification = require("../models/Notification");
@@ -1033,6 +1033,158 @@ async function createBuild({
 // LOCAL  -> use configured local path
 // GITHUB -> clone/update repository workspace
 // ======================================================
+// ======================================================
+// RESOLVE GITHUB PROJECT DIRECTORY
+// ======================================================
+//
+// Converts an optional relative GitHub project directory
+// such as:
+//
+//   test-project
+//   apps/backend
+//
+// into an absolute path INSIDE the cloned repository.
+//
+// This function performs its own security validation.
+// We do not trust controller validation alone.
+// ======================================================
+
+function resolveGitHubProjectDirectory(
+  workspacePath,
+  projectDirectory
+) {
+  const workspaceRoot =
+    path.resolve(workspacePath);
+
+  let directory =
+    typeof projectDirectory === "string"
+      ? projectDirectory.trim()
+      : "";
+
+  // Blank or "." means repository root.
+  if (!directory || directory === ".") {
+    return workspaceRoot;
+  }
+
+  // Normalize Windows separators.
+  directory =
+    directory.replace(/\\/g, "/");
+
+  // ----------------------------------------------
+  // SECURITY: reject absolute paths
+  // ----------------------------------------------
+
+  if (
+    directory.startsWith("/") ||
+    directory.startsWith("//") ||
+    /^[A-Za-z]:\//.test(directory)
+  ) {
+    throw new Error(
+      "Project directory must be relative to the GitHub repository."
+    );
+  }
+
+  // ----------------------------------------------
+  // SECURITY: reject control characters
+  // ----------------------------------------------
+
+  if (
+    /[\u0000-\u001F\u007F]/.test(
+      directory
+    )
+  ) {
+    throw new Error(
+      "Project directory contains invalid characters."
+    );
+  }
+
+  if (directory.length > 500) {
+    throw new Error(
+      "Project directory is too long."
+    );
+  }
+
+  // ----------------------------------------------
+  // SECURITY: reject traversal
+  // ----------------------------------------------
+
+  const segments =
+    directory
+      .split("/")
+      .filter(Boolean);
+
+  if (
+    segments.some(
+      (segment) =>
+        segment === "." ||
+        segment === ".."
+    )
+  ) {
+    throw new Error(
+      "Project directory cannot contain '.' or '..' path segments."
+    );
+  }
+
+  // ----------------------------------------------
+  // BUILD ABSOLUTE PATH
+  // ----------------------------------------------
+
+  const resolvedProjectPath =
+    path.resolve(
+      workspaceRoot,
+      ...segments
+    );
+
+  // ----------------------------------------------
+  // SECURITY: final containment check
+  // ----------------------------------------------
+
+  const relativePath =
+    path.relative(
+      workspaceRoot,
+      resolvedProjectPath
+    );
+
+  if (
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error(
+      "Project directory escapes the GitHub repository workspace."
+    );
+  }
+
+  // ----------------------------------------------
+  // EXISTENCE CHECK
+  // ----------------------------------------------
+
+  if (
+    !fs.existsSync(
+      resolvedProjectPath
+    )
+  ) {
+    throw new Error(
+      `GitHub project directory does not exist: ${directory}`
+    );
+  }
+
+  // ----------------------------------------------
+  // DIRECTORY CHECK
+  // ----------------------------------------------
+
+  const stats =
+    fs.statSync(
+      resolvedProjectPath
+    );
+
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `GitHub project directory is not a directory: ${directory}`
+    );
+  }
+
+  return resolvedProjectPath;
+}
 
 async function resolvePipelineProjectPath(
   pipeline,
@@ -1102,6 +1254,10 @@ async function resolvePipelineProjectPath(
     `[GIT] Preparing repository ${pipeline.repository} (${branch})`
   );
 
+  // ==================================================
+  // CLONE / UPDATE REPOSITORY
+  // ==================================================
+
   const gitResult =
     await prepareGitHubWorkspace({
       repository:
@@ -1128,19 +1284,61 @@ async function resolvePipelineProjectPath(
     );
   }
 
-  const resolvedPath =
+  // ==================================================
+  // REPOSITORY WORKSPACE ROOT
+  // ==================================================
+
+  const workspacePath =
     normalizeProjectPath(
       gitResult.workspacePath
     );
 
-  if (!resolvedPath) {
+  if (!workspacePath) {
     throw new Error(
       "GitHub workspace path is invalid."
     );
   }
 
-  // Save ReliAI-controlled workspace + exact commit.
-  // This allows Build creation to capture the SHA.
+  if (!fs.existsSync(workspacePath)) {
+    throw new Error(
+      `GitHub workspace does not exist: ${workspacePath}`
+    );
+  }
+
+  // ==================================================
+  // OPTIONAL MONOREPO PROJECT DIRECTORY
+  // ==================================================
+  //
+  // Example:
+  //
+  // repository:
+  //   reliai/
+  //
+  // projectDirectory:
+  //   test-project
+  //
+  // execution path:
+  //   <workspace>/test-project
+  //
+  // Blank projectDirectory means repository root.
+  // ==================================================
+
+  const projectDirectory =
+    typeof pipeline.projectDirectory ===
+      "string"
+      ? pipeline.projectDirectory.trim()
+      : "";
+
+  const resolvedPath =
+    resolveGitHubProjectDirectory(
+      workspacePath,
+      projectDirectory
+    );
+
+  // ==================================================
+  // SAVE WORKSPACE + COMMIT
+  // ==================================================
+
   await updatePipeline(
     pipeline._id,
     {
@@ -1162,8 +1360,9 @@ async function resolvePipelineProjectPath(
     }
   );
 
-  // Keep the current in-memory document synchronized
-  // because createBuild() uses pipeline.lastCommitId.
+  // Keep current Mongoose document synchronized because
+  // createBuild() reads pipeline.lastCommitId.
+
   pipeline.projectPath =
     resolvedPath;
 
@@ -1180,8 +1379,23 @@ async function resolvePipelineProjectPath(
       gitResult.repositoryName;
   }
 
+  // ==================================================
+  // LOG RESOLVED SOURCE
+  // ==================================================
+
   console.log(
-    `[GIT] Workspace ready: ${resolvedPath}`
+    `[GIT] Repository workspace: ${workspacePath}`
+  );
+
+  console.log(
+    `[GIT] Project directory: ${
+      projectDirectory ||
+      "(repository root)"
+    }`
+  );
+
+  console.log(
+    `[GIT] Execution path: ${resolvedPath}`
   );
 
   console.log(

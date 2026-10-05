@@ -42,6 +42,84 @@ const normalizeProjectPath = (value) => {
 
   return "";
 };
+const normalizeProjectDirectory = (value) => {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  if (typeof value !== "string") {
+    throw new Error(
+      "Project directory must be a string."
+    );
+  }
+
+  let directory = value.trim();
+
+  // Empty means repository root.
+  if (!directory || directory === ".") {
+    return "";
+  }
+
+  // Normalize Windows separators to forward slashes.
+  directory = directory.replace(/\\/g, "/");
+
+  // Absolute Unix path.
+  if (directory.startsWith("/")) {
+    throw new Error(
+      "Project directory must be relative to the repository root."
+    );
+  }
+
+  // Windows absolute path such as C:/Users/...
+  if (/^[A-Za-z]:\//.test(directory)) {
+    throw new Error(
+      "Project directory must not be an absolute Windows path."
+    );
+  }
+
+  // UNC/network paths.
+  if (directory.startsWith("//")) {
+    throw new Error(
+      "Network paths are not allowed."
+    );
+  }
+
+  const segments = directory
+    .split("/")
+    .filter(Boolean);
+
+  if (segments.length === 0) {
+    return "";
+  }
+
+  // Prevent traversal outside the cloned repository.
+  if (
+    segments.some(
+      (segment) =>
+        segment === "." ||
+        segment === ".."
+    )
+  ) {
+    throw new Error(
+      "Project directory cannot contain '.' or '..' path segments."
+    );
+  }
+
+  // Reject control characters.
+  if (/[\u0000-\u001F\u007F]/.test(directory)) {
+    throw new Error(
+      "Project directory contains invalid characters."
+    );
+  }
+
+  if (directory.length > 500) {
+    throw new Error(
+      "Project directory is too long."
+    );
+  }
+
+  return segments.join("/");
+};
 
 // ======================================================
 // HELPER: VALIDATE OBJECT ID
@@ -69,16 +147,17 @@ exports.createPipeline = async (req, res) => {
     }
 
     const {
-      name,
-      description,
-      sourceType,
-      repository,
-      branch,
-      projectPath,
-      projectType,
-      buildCommand,
-      testCommand,
-    } = req.body || {};
+  name,
+  description,
+  sourceType,
+  repository,
+  branch,
+  projectPath,
+  projectDirectory,
+  projectType,
+  buildCommand,
+  testCommand,
+} = req.body || {};
 
     // ==================================================
     // NAME
@@ -144,6 +223,7 @@ exports.createPipeline = async (req, res) => {
         : "main";
 
     let finalProjectPath = "";
+    let finalProjectDirectory = "";
 
     let repositoryOwner = "";
     let repositoryName = "";
@@ -208,6 +288,12 @@ exports.createPipeline = async (req, res) => {
         // GitHub projectPath is generated later by
         // gitService. Never trust a client-supplied path.
         finalProjectPath = "";
+        // Optional relative subdirectory
+       // inside the GitHub repository.
+        finalProjectDirectory =
+        normalizeProjectDirectory(
+        projectDirectory
+      );
       } catch (error) {
         return res.status(400).json({
           success: false,
@@ -251,6 +337,8 @@ exports.createPipeline = async (req, res) => {
 
         projectPath:
           finalProjectPath,
+        projectDirectory:
+          finalProjectDirectory,
 
         projectType:
           typeof projectType === "string" &&
@@ -609,6 +697,41 @@ if (body.branch !== undefined) {
   } else {
     pipeline.branch =
       requestedBranch;
+  }
+}
+
+// ======================================================
+// PROJECT DIRECTORY
+// ======================================================
+
+if (body.projectDirectory !== undefined) {
+  if (pipeline.sourceType !== "GITHUB") {
+    return res.status(400).json({
+      success: false,
+      message:
+        "Project directory is only supported for GitHub pipelines.",
+    });
+  }
+
+  try {
+    pipeline.projectDirectory =
+      normalizeProjectDirectory(
+        body.projectDirectory
+      );
+
+    // Force ReliAI to resolve the workspace again
+    // on the next GitHub build.
+    pipeline.projectPath = "";
+    pipeline.lastCommitId = "";
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message:
+        error.message ||
+        "Invalid project directory.",
+      code:
+        "INVALID_PROJECT_DIRECTORY",
+    });
   }
 }
 

@@ -89,17 +89,54 @@ const pipelineSchema = new mongoose.Schema(
     // --------------------------------------------------
     //
     // LOCAL:
-    // User-selected local project directory.
+    // User-selected absolute local project directory.
     //
     // GITHUB:
-    // ReliAI-managed cloned workspace directory.
+    // ReliAI-managed cloned repository workspace.
     //
-    // It is not required at schema level because a
-    // GitHub pipeline does not have a workspace until
-    // ReliAI prepares the repository.
+    // Example:
+    //
+    // C:\ReliAI\workspaces\owner__repo__pipelineId
+    //
+    // This is NOT supplied by the user for GitHub
+    // pipelines.
     // --------------------------------------------------
 
     projectPath: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    // --------------------------------------------------
+    // PROJECT DIRECTORY
+    // --------------------------------------------------
+    //
+    // Used primarily by GitHub pipelines when the actual
+    // application lives inside a subdirectory of the
+    // repository.
+    //
+    // Example repository:
+    //
+    // reliai/
+    //   reliai-backend/
+    //   reliai-frontend/
+    //   test-project/
+    //
+    // projectDirectory = "test-project"
+    //
+    // ReliAI will execute the build inside:
+    //
+    // <managed-workspace>/test-project
+    //
+    // IMPORTANT:
+    // This must remain a RELATIVE path.
+    //
+    // Security validation will be performed by the
+    // execution service before resolving this path.
+    // --------------------------------------------------
+
+    projectDirectory: {
       type: String,
       default: "",
       trim: true,

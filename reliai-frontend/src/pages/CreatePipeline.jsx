@@ -1,11 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+
 import Navbar from "../components/Navbar";
 import Sidebar from "../components/Sidebar";
 import API from "../services/api";
 
 function CreatePipeline() {
   const navigate = useNavigate();
+
+  // =====================================================
+  // FORM STATE
+  // =====================================================
 
   const [formData, setFormData] = useState({
     name: "",
@@ -17,23 +22,27 @@ function CreatePipeline() {
     repository: "",
     branch: "main",
 
-    // Only required for LOCAL pipelines
+    // Only used for LOCAL pipelines
     projectPath: "",
+
+    // Optional directory inside a GitHub repository.
+    // Example:
+    // test-project
+    // apps/backend
+    projectDirectory: "",
 
     buildCommand: "",
     testCommand: "",
   });
 
-  const [loading, setLoading] =
-    useState(false);
+  const [loading, setLoading] = useState(false);
 
   // =====================================================
   // INPUT CHANGE
   // =====================================================
 
   const handleChange = (e) => {
-    const { name, value } =
-      e.target;
+    const { name, value } = e.target;
 
     setFormData((previous) => ({
       ...previous,
@@ -45,20 +54,25 @@ function CreatePipeline() {
   // SOURCE TYPE CHANGE
   // =====================================================
 
-  const handleSourceTypeChange = (
-    sourceType
-  ) => {
+  const handleSourceTypeChange = (sourceType) => {
     setFormData((previous) => ({
       ...previous,
 
       sourceType,
 
-      // GitHub pipelines must not send
-      // a user-controlled local project path.
+      // GitHub pipelines must never use a
+      // user-controlled local filesystem path.
       projectPath:
         sourceType === "GITHUB"
           ? ""
           : previous.projectPath,
+
+      // Local pipelines do not use a repository
+      // subdirectory.
+      projectDirectory:
+        sourceType === "LOCAL"
+          ? ""
+          : previous.projectDirectory,
     }));
   };
 
@@ -66,25 +80,25 @@ function CreatePipeline() {
   // SUBMIT
   // =====================================================
 
-  const handleSubmit = async (
-    e
-  ) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!formData.name.trim()) {
-      alert(
-        "Pipeline name is required."
-      );
+    // -----------------------------------------------------
+    // PIPELINE NAME
+    // -----------------------------------------------------
 
+    if (!formData.name.trim()) {
+      alert("Pipeline name is required.");
       return;
     }
 
-    if (
-      !formData.repository.trim()
-    ) {
+    // -----------------------------------------------------
+    // REPOSITORY
+    // -----------------------------------------------------
+
+    if (!formData.repository.trim()) {
       alert(
-        formData.sourceType ===
-          "GITHUB"
+        formData.sourceType === "GITHUB"
           ? "GitHub repository URL is required."
           : "Repository / project name is required."
       );
@@ -92,9 +106,12 @@ function CreatePipeline() {
       return;
     }
 
+    // -----------------------------------------------------
+    // LOCAL PROJECT PATH
+    // -----------------------------------------------------
+
     if (
-      formData.sourceType ===
-        "LOCAL" &&
+      formData.sourceType === "LOCAL" &&
       !formData.projectPath.trim()
     ) {
       alert(
@@ -104,15 +121,19 @@ function CreatePipeline() {
       return;
     }
 
-    if (
-      formData.sourceType ===
-      "GITHUB"
-    ) {
+    // -----------------------------------------------------
+    // GITHUB VALIDATION
+    // -----------------------------------------------------
+
+    if (formData.sourceType === "GITHUB") {
       const repository =
         formData.repository.trim();
 
+      const githubRepositoryRegex =
+        /^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?\/?$/i;
+
       if (
-        !/^https:\/\/github\.com\/[^/]+\/[^/]+(?:\.git)?\/?$/i.test(
+        !githubRepositoryRegex.test(
           repository
         )
       ) {
@@ -122,7 +143,63 @@ function CreatePipeline() {
 
         return;
       }
+
+      // -----------------------------------------------
+      // PROJECT DIRECTORY BASIC CLIENT VALIDATION
+      // -----------------------------------------------
+      //
+      // Backend performs the real security validation.
+      // This only catches obvious mistakes early.
+      // -----------------------------------------------
+
+      const projectDirectory =
+        formData.projectDirectory.trim();
+
+      if (projectDirectory) {
+        const normalizedDirectory =
+          projectDirectory.replace(
+            /\\/g,
+            "/"
+          );
+
+        if (
+          normalizedDirectory.startsWith("/") ||
+          normalizedDirectory.startsWith("//") ||
+          /^[A-Za-z]:\//.test(
+            normalizedDirectory
+          )
+        ) {
+          alert(
+            "Project Directory must be relative to the GitHub repository."
+          );
+
+          return;
+        }
+
+        const segments =
+          normalizedDirectory
+            .split("/")
+            .filter(Boolean);
+
+        if (
+          segments.some(
+            (segment) =>
+              segment === "." ||
+              segment === ".."
+          )
+        ) {
+          alert(
+            "Project Directory cannot contain '.' or '..' path segments."
+          );
+
+          return;
+        }
+      }
     }
+
+    // -----------------------------------------------------
+    // CREATE PIPELINE
+    // -----------------------------------------------------
 
     setLoading(true);
 
@@ -167,10 +244,26 @@ function CreatePipeline() {
           formData.projectPath.trim();
       }
 
+      // =================================================
+      // GITHUB ONLY
+      // =================================================
+
+      if (
+        formData.sourceType ===
+        "GITHUB"
+      ) {
+        payload.projectDirectory =
+          formData.projectDirectory.trim();
+      }
+
       console.log(
         "[CREATE PIPELINE] Payload:",
         payload
       );
+
+      // =================================================
+      // API REQUEST
+      // =================================================
 
       const response =
         await API.post(
@@ -191,8 +284,7 @@ function CreatePipeline() {
       );
 
       alert(
-        error.response?.data
-          ?.message ||
+        error.response?.data?.message ||
           "Failed to create pipeline"
       );
     } finally {
@@ -223,9 +315,15 @@ function CreatePipeline() {
     fontWeight: "500",
   };
 
-  const sourceButtonStyle = (
-    active
-  ) => ({
+  const helperStyle = {
+    marginTop: "-12px",
+    marginBottom: "20px",
+    color: "#64748b",
+    fontSize: "13px",
+    lineHeight: "1.5",
+  };
+
+  const sourceButtonStyle = (active) => ({
     flex: 1,
 
     padding: "14px 16px",
@@ -287,16 +385,13 @@ function CreatePipeline() {
           </h1>
 
           <form
-            onSubmit={
-              handleSubmit
-            }
+            onSubmit={handleSubmit}
             style={{
               background: "white",
 
               padding: "30px",
 
-              borderRadius:
-                "10px",
+              borderRadius: "10px",
 
               maxWidth: "700px",
 
@@ -308,9 +403,7 @@ function CreatePipeline() {
             {/* PIPELINE NAME                         */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               Pipeline Name
             </label>
 
@@ -318,12 +411,8 @@ function CreatePipeline() {
               type="text"
               name="name"
               placeholder="ReliAI Backend"
-              value={
-                formData.name
-              }
-              onChange={
-                handleChange
-              }
+              value={formData.name}
+              onChange={handleChange}
               required
               style={inputStyle}
             />
@@ -332,27 +421,19 @@ function CreatePipeline() {
             {/* DESCRIPTION                           */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               Description
             </label>
 
             <textarea
               name="description"
               placeholder="Backend deployment pipeline"
-              value={
-                formData.description
-              }
-              onChange={
-                handleChange
-              }
+              value={formData.description}
+              onChange={handleChange}
               rows="4"
               style={{
                 ...inputStyle,
-
-                resize:
-                  "vertical",
+                resize: "vertical",
               }}
             />
 
@@ -363,8 +444,7 @@ function CreatePipeline() {
             <label
               style={{
                 ...labelStyle,
-                marginBottom:
-                  "10px",
+                marginBottom: "10px",
               }}
             >
               Source Type
@@ -374,8 +454,7 @@ function CreatePipeline() {
               style={{
                 display: "flex",
                 gap: "12px",
-                marginBottom:
-                  "25px",
+                marginBottom: "25px",
               }}
             >
               <button
@@ -413,9 +492,7 @@ function CreatePipeline() {
             {/* REPOSITORY                            */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               {formData.sourceType ===
               "GITHUB"
                 ? "GitHub Repository URL"
@@ -431,12 +508,8 @@ function CreatePipeline() {
                   ? "https://github.com/username/project"
                   : "ReliAI Backend"
               }
-              value={
-                formData.repository
-              }
-              onChange={
-                handleChange
-              }
+              value={formData.repository}
+              onChange={handleChange}
               required
               style={inputStyle}
             />
@@ -448,50 +521,60 @@ function CreatePipeline() {
             {formData.sourceType ===
               "LOCAL" && (
               <>
-                <label
-                  style={
-                    labelStyle
-                  }
-                >
+                <label style={labelStyle}>
                   Project Path
                 </label>
 
                 <input
                   type="text"
                   name="projectPath"
-                  placeholder="C:\\Users\\SIDDU\\project"
+                  placeholder={"C:\\Users\\SIDDU\\project"}
                   value={
                     formData.projectPath
                   }
-                  onChange={
-                    handleChange
-                  }
+                  onChange={handleChange}
                   required
-                  style={
-                    inputStyle
-                  }
+                  style={inputStyle}
                 />
 
-                <div
-                  style={{
-                    marginTop:
-                      "-12px",
+                <div style={helperStyle}>
+                  Absolute path to the
+                  project on the machine
+                  running the ReliAI
+                  backend.
+                </div>
+              </>
+            )}
 
-                    marginBottom:
-                      "20px",
+            {/* ===================================== */}
+            {/* GITHUB PROJECT DIRECTORY              */}
+            {/* ===================================== */}
 
-                    color:
-                      "#64748b",
+            {formData.sourceType ===
+              "GITHUB" && (
+              <>
+                <label style={labelStyle}>
+                  Project Directory
+                  (optional)
+                </label>
 
-                    fontSize:
-                      "13px",
-                  }}
-                >
-                  Absolute path
-                  to the project
-                  on the machine
-                  running the
-                  ReliAI backend.
+                <input
+                  type="text"
+                  name="projectDirectory"
+                  placeholder="test-project"
+                  value={
+                    formData.projectDirectory
+                  }
+                  onChange={handleChange}
+                  style={inputStyle}
+                />
+
+                <div style={helperStyle}>
+                  Folder inside the GitHub
+                  repository that ReliAI
+                  should build and test.
+                  Leave blank to use the
+                  repository root.
                 </div>
               </>
             )}
@@ -500,9 +583,7 @@ function CreatePipeline() {
             {/* BRANCH                                */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               Branch
             </label>
 
@@ -510,12 +591,8 @@ function CreatePipeline() {
               type="text"
               name="branch"
               placeholder="main"
-              value={
-                formData.branch
-              }
-              onChange={
-                handleChange
-              }
+              value={formData.branch}
+              onChange={handleChange}
               style={inputStyle}
             />
 
@@ -523,52 +600,31 @@ function CreatePipeline() {
             {/* BUILD COMMAND                         */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               Build Command
             </label>
 
             <input
               type="text"
               name="buildCommand"
-              placeholder="npm install"
+              placeholder="npm run build"
               value={
                 formData.buildCommand
               }
-              onChange={
-                handleChange
-              }
+              onChange={handleChange}
               style={inputStyle}
             />
 
-            <div
-              style={{
-                marginTop:
-                  "-12px",
-
-                marginBottom:
-                  "20px",
-
-                color:
-                  "#64748b",
-
-                fontSize:
-                  "13px",
-              }}
-            >
-              Example: npm
-              install, npm run
-              build, mvn package
+            <div style={helperStyle}>
+              Example: npm install, npm
+              run build, mvn package
             </div>
 
             {/* ===================================== */}
             {/* TEST COMMAND                          */}
             {/* ===================================== */}
 
-            <label
-              style={labelStyle}
-            >
+            <label style={labelStyle}>
               Test Command
             </label>
 
@@ -579,29 +635,17 @@ function CreatePipeline() {
               value={
                 formData.testCommand
               }
-              onChange={
-                handleChange
-              }
+              onChange={handleChange}
               style={inputStyle}
             />
 
             <div
               style={{
-                marginTop:
-                  "-12px",
-
-                marginBottom:
-                  "25px",
-
-                color:
-                  "#64748b",
-
-                fontSize:
-                  "13px",
+                ...helperStyle,
+                marginBottom: "25px",
               }}
             >
-              Example: npm
-              test, pytest,
+              Example: npm test, pytest,
               mvn test
             </div>
 
@@ -613,40 +657,37 @@ function CreatePipeline() {
               "GITHUB" && (
               <div
                 style={{
-                  background:
-                    "#eff6ff",
+                  background: "#eff6ff",
 
                   border:
                     "1px solid #bfdbfe",
 
-                  borderRadius:
-                    "8px",
+                  borderRadius: "8px",
 
-                  padding:
-                    "14px",
+                  padding: "14px",
 
-                  marginBottom:
-                    "25px",
+                  marginBottom: "25px",
 
-                  color:
-                    "#1e40af",
+                  color: "#1e40af",
 
-                  fontSize:
-                    "14px",
+                  fontSize: "14px",
 
-                  lineHeight:
-                    "1.5",
+                  lineHeight: "1.5",
                 }}
               >
-                ReliAI will
-                automatically
-                clone this
-                repository into
-                its controlled
-                workspace. You
-                do not need to
-                provide a local
-                project path.
+                ReliAI will automatically
+                clone this repository into
+                its controlled workspace.
+
+                <br />
+                <br />
+
+                If the application is
+                inside a subfolder, enter
+                that folder in Project
+                Directory. Otherwise leave
+                it blank to build from the
+                repository root.
               </div>
             )}
 
@@ -656,39 +697,29 @@ function CreatePipeline() {
 
             <button
               type="submit"
-              disabled={
-                loading
-              }
+              disabled={loading}
               style={{
                 width: "100%",
 
-                padding:
-                  "14px",
+                padding: "14px",
 
-                background:
-                  loading
-                    ? "#94a3b8"
-                    : "#2563eb",
+                background: loading
+                  ? "#94a3b8"
+                  : "#2563eb",
 
-                color:
-                  "white",
+                color: "white",
 
-                border:
-                  "none",
+                border: "none",
 
-                borderRadius:
-                  "8px",
+                borderRadius: "8px",
 
-                cursor:
-                  loading
-                    ? "not-allowed"
-                    : "pointer",
+                cursor: loading
+                  ? "not-allowed"
+                  : "pointer",
 
-                fontSize:
-                  "16px",
+                fontSize: "16px",
 
-                fontWeight:
-                  "bold",
+                fontWeight: "bold",
               }}
             >
               {loading
